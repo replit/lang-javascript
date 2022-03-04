@@ -1,10 +1,14 @@
 import {parser} from "@lezer/javascript"
+import type {LRParser} from "@lezer/lr"
 import {LRLanguage, LanguageSupport,
         delimitedIndent, flatIndent, continuedIndent, indentNodeProp,
         foldNodeProp, foldInside} from "@codemirror/language"
 import {styleTags, tags as t} from "@codemirror/highlight"
 import {completeFromList, ifNotIn} from "@codemirror/autocomplete"
 import {snippets} from "./snippets"
+import {parseMixed} from "@lezer/common";
+import {cssLanguage} from "@codemirror/lang-css";
+import {htmlLanguage} from "@codemirror/lang-html";
 
 /// A language provider based on the [Lezer JavaScript
 /// parser](https://github.com/lezer-parser/javascript), extended with
@@ -95,7 +99,67 @@ export const javascriptLanguage = LRLanguage.define({
         "JSXIdentifier JSXNameSpacedName": t.tagName,
         "JSXAttribute/JSXIdentifier JSXAttribute/JSXNameSpacedName": t.attributeName
       })
-    ]
+    ],
+
+    // https://discuss.codemirror.net/t/deeply-nested-parser/3485
+    wrap: parseMixed((node, input) => {
+      if (node.type.name !== "TemplateString") {
+        return null;
+      }
+    
+      const { parent, prevSibling: tagNode } = node.node;
+    
+      if (tagNode == null) return;
+      let parser: LRParser;
+    
+      if (
+        ["VariableName", "MemberExpression", "CallExpression"].includes(
+          tagNode.type.name
+        )
+      ) {
+        const tag = input.read(tagNode.from, tagNode.to);
+    
+        if (
+          tag === "css" ||
+          tag.startsWith("styled.") ||
+          (tag.startsWith("styled(") && tag[tag.length - 1] === ")")
+        ) {
+          parser = cssLanguage.parser;
+        } else if (tag === "html") {
+          parser = htmlLanguage.parser;
+        } else {
+          return null;
+        }
+      } else if (
+        parent.type.name === "JSXEscape" &&
+        parent.parent.type.name === "JSXElement" &&
+        input.read(parent.parent.from, parent.parent.from + 11) === "<style jsx>"
+      ) {
+        parser = cssLanguage.parser;
+      } else {
+        return null;
+      }
+    
+      const overlay: { from: number; to: number }[] = [];
+      let from = node.from;
+    
+      for (
+        let child = node.node.firstChild;
+        child !== null;
+        child = child.nextSibling
+      ) {
+        overlay.push({ from, to: child.from });
+        from = child.to;
+      }
+    
+      if (overlay.length === 0) {
+        return { parser };
+      }
+    
+      overlay.push({ from, to: node.to });
+    
+      return { parser, overlay };
+    }),
   }),
   languageData: {
     closeBrackets: {brackets: ["(", "[", "{", "'", '"', "`"]},
